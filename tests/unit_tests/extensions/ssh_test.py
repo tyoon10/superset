@@ -14,6 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import paramiko
@@ -426,6 +427,36 @@ def test_create_tunnel_without_host_key_does_not_pin(mock_open_tunnel: Mock) -> 
 
     _, kwargs = mock_open_tunnel.call_args
     assert "ssh_host_key" not in kwargs
+
+
+def test_sshtunnel_forwarder_constructs_without_dsskey(tmp_path: Path) -> None:
+    """
+    paramiko 4.0 removed ``DSSKey``, but sshtunnel 0.4.0 dereferences
+    ``paramiko.DSSKey`` in ``get_keys()``, which runs on every
+    ``SSHTunnelForwarder`` construction regardless of the authentication method.
+    Without the shim in ``superset.extensions.ssh`` this raises
+    ``AttributeError: module 'paramiko' has no attribute 'DSSKey'`` and no
+    tunnel can ever be opened.
+    """
+    # An id_dsa file in the searched directory forces sshtunnel to actually
+    # attempt a load with the placeholder class, not just reference it.
+    (tmp_path / "id_dsa").write_text("not a valid dsa key")
+
+    keys = sshtunnel.SSHTunnelForwarder.get_keys(
+        host_pkey_directories=[str(tmp_path)], allow_agent=False
+    )
+
+    assert keys == []
+
+    forwarder = sshtunnel.SSHTunnelForwarder(
+        ("ssh.example.com", 22),
+        ssh_username="tunneluser",
+        ssh_password="secret",  # noqa: S106
+        remote_bind_address=("db.example.com", 5432),
+        host_pkey_directories=[str(tmp_path)],
+        allow_agent=False,
+    )
+    assert forwarder.ssh_host == "ssh.example.com"
 
 
 def test_ssh_tunnel_schema_round_trips_server_host_key() -> None:
